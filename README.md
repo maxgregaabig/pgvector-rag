@@ -74,32 +74,35 @@ Interactive docs are at <http://localhost:8000/docs>.
 `top_k` defaults to `DEFAULT_TOP_K` (5) and is capped at `MAX_TOP_K` (50).
 `document_ids` scopes retrieval to a subset of documents.
 
-A `/v1/ask` response, taken from a run against the compose stack with the fake
-provider, so the wording of the answer is a template:
+The `/v1/ask` response to the call above, against the compose stack with the
+fake provider, so the wording of the answer is a template:
 
 ```json
 {
-  "question": "What is the daily payout cutoff?",
-  "answer": "Based on the indexed documents: Settlement of card payments happens on T plus two business days for domestic transactions. [1] ...",
+  "question": "When is the payout cutoff?",
+  "answer": "Based on the indexed documents: The daily payout cutoff is 16:00 UTC. [1]",
   "citations": [
     {
       "marker": 1,
-      "chunk_id": "9e1b...",
-      "document_id": "5c4d...",
+      "chunk_id": "380a00b1-228c-492f-ba0d-63c5dd673a37",
+      "document_id": "1e5c0088-ad3f-4699-9e67-8992adcad3fe",
       "source": "payments-faq.md",
       "ordinal": 0,
-      "score": 0.3826
+      "score": 0.50023
     }
   ],
   "cached": false,
-  "usage": {"embedding_tokens": 7, "chat_input_tokens": 117, "chat_output_tokens": 21},
-  "took_ms": 1.927
+  "usage": {"embedding_tokens": 7, "chat_input_tokens": 108, "chat_output_tokens": 19},
+  "took_ms": 2.008
 }
 ```
 
+Repeating that request returns the same body with `"cached": true` and, in
+this run, `took_ms` of 0.326 instead of 2.008.
+
 ## Architecture
 
-```
+```text
 client -> FastAPI (app/main.py)
              |
              +-- RagService (app/service.py)
@@ -116,7 +119,7 @@ would swap in a different model vendor.
 
 Layout:
 
-```
+```text
 app/
   main.py        FastAPI app factory, routes, lifespan wiring
   service.py     ingest, search, ask, prompt building, citation extraction
@@ -231,7 +234,7 @@ STORE_BACKEND=memory CACHE_BACKEND=memory PROVIDER=fake python -m eval.run_eval
 
 Output from a run in this repo, at the default chunk size:
 
-```
+```text
 store=memory cache=memory provider=fake
 chunking=900/150 chars, top_k=5
 corpus: 4 documents, 5 chunks, 15 questions (ingest 4.5 ms)
@@ -255,7 +258,7 @@ Read that with care. At 900 character chunks the four fixture documents produce
 only 5 chunks, so the top 5 is the whole corpus and a perfect hit rate says
 very little. The smaller chunk size is the informative run:
 
-```
+```text
 $ python -m eval.run_eval --chunk-chars 300 --chunk-overlap 60
 chunking=300/60 chars, top_k=5
 corpus: 4 documents, 16 chunks, 15 questions
@@ -269,7 +272,7 @@ corpus: 4 documents, 16 chunks, 15 questions
 The same run against the real stack, with `docker compose up -d postgres redis`
 running:
 
-```
+```text
 store=postgres cache=redis provider=fake
 chunking=300/60 chars, top_k=5
 corpus: 4 documents, 16 chunks, 15 questions (ingest 225.3 ms)
@@ -302,13 +305,13 @@ make test
 pytest
 ```
 
-```
+```text
 37 passed, 7 skipped
 ```
 
 The 7 skips are the integration tests, and they say why:
 
-```
+```text
 SKIPPED tests/test_integration_postgres.py:69: DATABASE_URL is not set, skipping
 PostgreSQL integration tests. Run 'docker compose up -d postgres redis' and
 export DATABASE_URL to enable them.
@@ -325,7 +328,7 @@ DATABASE_URL=postgresql://rag:rag@localhost:5432/rag \
 REDIS_URL=redis://localhost:6379/0 pytest
 ```
 
-```
+```text
 44 passed
 ```
 
