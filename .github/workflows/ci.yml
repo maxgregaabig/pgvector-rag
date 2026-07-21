@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  UV_VERSION: "0.5.14"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      - run: uv run --extra dev ruff check .
+      - run: uv run --extra dev ruff format --check .
+
+  unit:
+    # No OPENAI_API_KEY, no DATABASE_URL and no REDIS_URL are set here on
+    # purpose. The default suite has to pass on the fake provider alone, and
+    # the integration tests have to skip with a message rather than fail.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      - run: uv run --extra dev pytest -rs
+      - name: Offline eval
+        env:
+          STORE_BACKEND: memory
+          CACHE_BACKEND: memory
+          PROVIDER: fake
+        run: uv run --extra dev python -m eval.run_eval --json eval/out/report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval/out/report.json
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: rag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rag -d rag"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://rag:rag@localhost:5432/rag
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      - run: uv run --extra dev pytest
+
+  compose:
+    # Checks the one command claim in the README.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the stack
+        run: docker compose up -d --build
+      - name: Wait for the API to report healthy
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/healthz; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Ingest, search and ask
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST http://localhost:8000/v1/documents \
+            -H 'content-type: application/json' \
+            -d '{"source":"faq.md","text":"The daily payout cutoff is 16:00 UTC. Chargebacks can be raised within 120 days of the transaction date."}'
+          curl -fsS -X POST http://localhost:8000/v1/search \
+            -H 'content-type: application/json' \
+            -d '{"query":"payout cutoff","top_k":2}'
+          curl -fsS -X POST http://localhost:8000/v1/ask \
+            -H 'content-type: application/json' \
+            -d '{"question":"When is the payout cutoff?","top_k":3}'
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
