@@ -14,8 +14,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.12"
@@ -31,8 +31,8 @@ jobs:
     # the integration tests have to skip with a message rather than fail.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.12"
@@ -43,7 +43,7 @@ jobs:
           CACHE_BACKEND: memory
           PROVIDER: fake
         run: uv run --extra dev python -m eval.run_eval --json eval/out/report.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: eval-report
           path: eval/out/report.json
@@ -77,8 +77,8 @@ jobs:
       DATABASE_URL: postgresql://rag:rag@localhost:5432/rag
       REDIS_URL: redis://localhost:6379/0
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.12"
@@ -88,7 +88,7 @@ jobs:
     # Checks the one command claim in the README.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Start the stack
         run: docker compose up -d --build
       - name: Wait for the API to report healthy
