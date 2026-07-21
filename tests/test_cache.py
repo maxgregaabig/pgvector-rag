@@ -36,3 +36,33 @@ async def test_memory_cache_roundtrip():
     assert await cache.get("k") == "v"
     await cache.aclose()
     assert await cache.get("k") is None
+
+
+async def test_memory_cache_honours_ttl():
+    cache = MemoryCache()
+    await cache.set("k", "v", 0)
+    assert await cache.get("k") is None
+
+
+async def test_memory_cache_is_bounded():
+    # Without a bound this dict would grow for the life of the process, since
+    # every distinct question and chunk body produces a new key.
+    cache = MemoryCache(max_entries=10)
+    for i in range(50):
+        await cache.set(f"k{i}", str(i), 60)
+
+    assert len(cache._data) == 10  # pylint: disable=protected-access
+    assert await cache.get("k0") is None
+    assert await cache.get("k49") == "49"
+
+
+async def test_memory_cache_eviction_is_least_recently_used():
+    cache = MemoryCache(max_entries=2)
+    await cache.set("a", "1", 60)
+    await cache.set("b", "2", 60)
+    await cache.get("a")  # makes "b" the least recently used
+    await cache.set("c", "3", 60)
+
+    assert await cache.get("a") == "1"
+    assert await cache.get("b") is None
+    assert await cache.get("c") == "3"

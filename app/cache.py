@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+from collections import OrderedDict
 from typing import Protocol
 from uuid import UUID
 
@@ -30,19 +32,36 @@ class Cache(Protocol):
 
 
 class MemoryCache:
-    """Dict backed cache. TTL is accepted and ignored, entries live for the
-    lifetime of the process."""
+    """Process local cache with the same expiry behaviour as the Redis one.
+
+    Both the TTL and the size bound matter. This is the default backend for the
+    tests and the eval, and the keys are hashes of user questions and chunk
+    bodies, so an unbounded dict would grow for the life of the process. Oldest
+    entry is evicted once max_entries is reached.
+    """
 
     name = "memory"
 
-    def __init__(self) -> None:
-        self._data: dict[str, str] = {}
+    def __init__(self, max_entries: int = 1024) -> None:
+        self._data: OrderedDict[str, tuple[str, float]] = OrderedDict()
+        self._max_entries = max_entries
 
     async def get(self, key: str) -> str | None:
-        return self._data.get(key)
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        value, expires_at = entry
+        if expires_at <= time.monotonic():
+            del self._data[key]
+            return None
+        self._data.move_to_end(key)
+        return value
 
     async def set(self, key: str, value: str, ttl_seconds: int) -> None:
-        self._data[key] = value
+        self._data[key] = (value, time.monotonic() + ttl_seconds)
+        self._data.move_to_end(key)
+        while len(self._data) > self._max_entries:
+            self._data.popitem(last=False)
 
     async def aclose(self) -> None:
         self._data.clear()
@@ -52,6 +71,9 @@ class RedisCache:
     name = "redis"
 
     def __init__(self, url: str) -> None:
+        # Imported here so the redis client is only required when this backend
+        # is selected.
+        # pylint: disable=import-outside-toplevel
         import redis.asyncio as redis
 
         self._client = redis.from_url(url, decode_responses=True)
