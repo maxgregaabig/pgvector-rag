@@ -13,13 +13,11 @@ class VectorStore(Protocol):
 
     async def setup(self) -> None:
         """Open connections and apply migrations if the backend needs them."""
-        ...
 
     async def add_document(self, document: DocumentRecord, chunks: list[ChunkRecord]) -> None: ...
 
     async def delete_document(self, document_id: UUID) -> bool:
         """Return True if a document was removed."""
-        ...
 
     async def search(
         self,
@@ -28,7 +26,6 @@ class VectorStore(Protocol):
         document_ids: list[UUID] | None = None,
     ) -> list[SearchHit]:
         """Nearest neighbours by cosine similarity, best first."""
-        ...
 
     async def count_chunks(self) -> int: ...
 

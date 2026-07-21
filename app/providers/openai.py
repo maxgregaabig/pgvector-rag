@@ -19,9 +19,13 @@ class OpenAIError(RuntimeError):
 class OpenAIProvider:
     name = "openai"
 
-    def __init__(
+    # Five of the six are keyword-only with defaults, mapping settings onto the
+    # client. Wrapping them in a config object for the single call site in
+    # build_provider would add a type and remove nothing.
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         api_key: str,
+        *,
         base_url: str = "https://api.openai.com/v1",
         embedding_model: str = "text-embedding-3-small",
         chat_model: str = "gpt-4o-mini",

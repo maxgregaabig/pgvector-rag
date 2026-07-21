@@ -17,6 +17,8 @@ def build_provider(settings) -> Provider:
     """Create the provider named by the settings."""
     if settings.provider == "fake":
         return FakeProvider(dim=settings.embedding_dim)
+    # Imported here so the OpenAI client is only required when that provider is used.
+    # pylint: disable=import-outside-toplevel
     from app.providers.openai import OpenAIProvider
 
     return OpenAIProvider(

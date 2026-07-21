@@ -16,6 +16,8 @@ def build_store(settings) -> VectorStore:
     """Create the store named by the settings."""
     if settings.store_backend == "memory":
         return MemoryVectorStore()
+    # Imported here so psycopg is only required when the postgres backend is used.
+    # pylint: disable=import-outside-toplevel
     from app.store.postgres import PostgresVectorStore
 
     return PostgresVectorStore(

@@ -34,15 +34,12 @@ class Provider(Protocol):
 
     async def embed(self, texts: list[str]) -> EmbeddingResult:
         """Embed a batch of texts. The order of the output matches the input."""
-        ...
 
     async def chat(self, system: str, user: str) -> ChatResult:
         """Run a single-turn chat completion."""
-        ...
 
     async def aclose(self) -> None:
         """Release any network resources."""
-        ...
 
 
 def estimate_tokens(text: str) -> int:
