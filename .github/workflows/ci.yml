@@ -21,6 +21,9 @@ jobs:
           python-version: "3.12"
       - run: uv run --extra dev ruff check .
       - run: uv run --extra dev ruff format --check .
+      - run: uv run --extra dev pylint app eval tests
+      # Catches a syntax error in a module no test imports.
+      - run: uv run python -m compileall -q app eval tests
 
   unit:
     # No OPENAI_API_KEY, no DATABASE_URL and no REDIS_URL are set here on
