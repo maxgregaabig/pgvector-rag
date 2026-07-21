@@ -36,7 +36,7 @@ test-integration:
 test-all: lint test-integration
 
 eval:
-	STORE_BACKEND=memory CACHE_BACKEND=memory PROVIDER=fake $(RUN) python -m eval.run_eval
+	$(RUN) python -m eval.run_eval
 
 up:
 	docker compose up --build

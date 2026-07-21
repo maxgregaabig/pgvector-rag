@@ -9,9 +9,9 @@ ask, and reports:
 * token counts and an estimated cost from the per million token prices in the
   settings.
 
-Defaults are the memory store, the memory cache and the fake provider, so it
-runs offline. Point STORE_BACKEND, CACHE_BACKEND and PROVIDER at the real
-backends to evaluate the real thing.
+Unless the environment says otherwise this uses the memory store, the memory
+cache and the fake provider, so it runs offline. Set STORE_BACKEND,
+CACHE_BACKEND and PROVIDER to evaluate the real backends.
 
 Usage:
     python -m eval.run_eval
@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import statistics
 import time
 from pathlib import Path
@@ -34,6 +35,20 @@ from app.service import RagService
 from app.store import build_store
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+# The service defaults to Postgres and Redis. The eval defaults to the in
+# process backends instead, so that running it needs nothing.
+OFFLINE_DEFAULTS = {
+    "STORE_BACKEND": "memory",
+    "CACHE_BACKEND": "memory",
+    "PROVIDER": "fake",
+}
+
+
+def apply_offline_defaults() -> None:
+    """Fill in the in process backends for any variable the caller left unset."""
+    for key, value in OFFLINE_DEFAULTS.items():
+        os.environ.setdefault(key, value)
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -239,6 +254,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    apply_offline_defaults()
     report = asyncio.run(
         run(
             sorted(set(args.k)),

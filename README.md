@@ -223,13 +223,13 @@ instead of the estimate.
 
 `eval/run_eval.py` ingests four fixture documents, runs 15 fixture questions and
 checks whether the chunk holding the expected answer snippet appears in the top
-k. It defaults to the memory store, the memory cache and the fake provider, so
-it runs offline.
+k. Unless the environment says otherwise it uses the memory store, the memory
+cache and the fake provider, so it runs offline.
 
 ```bash
 make eval
 # or
-STORE_BACKEND=memory CACHE_BACKEND=memory PROVIDER=fake python -m eval.run_eval
+python -m eval.run_eval
 ```
 
 Output from a run in this repo, at the default chunk size:
