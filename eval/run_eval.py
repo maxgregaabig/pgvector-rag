@@ -26,6 +26,7 @@ import json
 import os
 import statistics
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.cache import build_cache
@@ -60,133 +61,199 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[rank - 1]
 
 
+@dataclass
+class IngestStats:
+    chunks: int = 0
+    embedding_tokens: int = 0
+    elapsed_ms: float = 0.0
+
+
+@dataclass
+class QuestionStats:  # pylint: disable=too-many-instance-attributes
+    """Everything measured while running the question set.
+
+    A flat record of counters and samples. Splitting it into retrieval, latency
+    and token sub-objects would satisfy the attribute count and make every read
+    site longer for nothing.
+    """
+
+    hits: dict[int, int] = field(default_factory=dict)
+    reciprocal_rank_sum: float = 0.0
+    found: int = 0
+    misses: list[str] = field(default_factory=list)
+    search_latencies: list[float] = field(default_factory=list)
+    ask_latencies: list[float] = field(default_factory=list)
+    cached_ask_latencies: list[float] = field(default_factory=list)
+    embedding_tokens: int = 0
+    chat_input_tokens: int = 0
+    chat_output_tokens: int = 0
+
+
+async def ingest_corpus(service: RagService, documents: list[dict]) -> IngestStats:
+    """Load the fixture documents and report what it cost."""
+    stats = IngestStats()
+    started = time.perf_counter()
+    for document in documents:
+        result = await service.ingest(
+            source=document["source"],
+            text=document["text"],
+            title=document.get("title"),
+        )
+        stats.chunks += result.chunks
+        stats.embedding_tokens += result.embedding_tokens
+    stats.elapsed_ms = (time.perf_counter() - started) * 1000
+    return stats
+
+
+def rank_of_expected(results, expected_source: str, expected_snippet: str) -> int | None:
+    """1-based position of the first result matching the fixture, or None."""
+    for index, result in enumerate(results, start=1):
+        if result.source == expected_source and expected_snippet in result.content:
+            return index
+    return None
+
+
+async def measure_questions(
+    service: RagService,
+    questions: list[dict],
+    k_values: list[int],
+    warm_cache: bool,
+) -> QuestionStats:
+    """Run search and ask for every question, timing both."""
+    stats = QuestionStats(hits=dict.fromkeys(k_values, 0))
+    max_k = max(k_values)
+
+    for item in questions:
+        started = time.perf_counter()
+        search = await service.search(item["question"], top_k=max_k)
+        stats.search_latencies.append((time.perf_counter() - started) * 1000)
+
+        rank = rank_of_expected(search.results, item["source"], item["snippet"])
+        if rank is None:
+            stats.misses.append(item["question"])
+        else:
+            stats.found += 1
+            stats.reciprocal_rank_sum += 1.0 / rank
+            for k in k_values:
+                if rank <= k:
+                    stats.hits[k] += 1
+
+        started = time.perf_counter()
+        answer = await service.ask(item["question"], top_k=max_k)
+        stats.ask_latencies.append((time.perf_counter() - started) * 1000)
+        stats.embedding_tokens += answer.usage.embedding_tokens
+        stats.chat_input_tokens += answer.usage.chat_input_tokens
+        stats.chat_output_tokens += answer.usage.chat_output_tokens
+
+        if warm_cache:
+            started = time.perf_counter()
+            repeat = await service.ask(item["question"], top_k=max_k)
+            stats.cached_ask_latencies.append((time.perf_counter() - started) * 1000)
+            if not repeat.cached:
+                raise RuntimeError(f"expected a cache hit for {item['question']!r}")
+
+    return stats
+
+
+def build_report(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    settings: Settings,
+    names: dict[str, str],
+    k_values: list[int],
+    document_count: int,
+    question_count: int,
+    ingest: IngestStats,
+    stats: QuestionStats,
+) -> dict:
+    """Assemble the JSON report. Pure: every input is a value, nothing is read
+    from the environment or the network here."""
+    embedding_tokens = ingest.embedding_tokens + stats.embedding_tokens
+    cost = (
+        embedding_tokens * settings.embedding_price_per_mtok
+        + stats.chat_input_tokens * settings.chat_input_price_per_mtok
+        + stats.chat_output_tokens * settings.chat_output_price_per_mtok
+    ) / 1_000_000
+
+    return {
+        "config": {
+            **names,
+            "embedding_model": settings.embedding_model,
+            "chat_model": settings.chat_model,
+            "chunk_target_chars": settings.chunk_target_chars,
+            "chunk_overlap_chars": settings.chunk_overlap_chars,
+            "top_k": max(k_values),
+        },
+        "corpus": {
+            "documents": document_count,
+            "chunks": ingest.chunks,
+            "questions": question_count,
+            "ingest_ms": round(ingest.elapsed_ms, 1),
+        },
+        "retrieval": {
+            "hit_rate": {str(k): round(stats.hits[k] / question_count, 4) for k in k_values},
+            "mrr": round(stats.reciprocal_rank_sum / question_count, 4),
+            "found": stats.found,
+            "misses": stats.misses,
+        },
+        "latency_ms": {
+            "search_p50": round(statistics.median(stats.search_latencies), 2),
+            "search_p95": round(percentile(stats.search_latencies, 0.95), 2),
+            "ask_p50": round(statistics.median(stats.ask_latencies), 2),
+            "ask_p95": round(percentile(stats.ask_latencies, 0.95), 2),
+            "ask_cached_p50": (
+                round(statistics.median(stats.cached_ask_latencies), 2)
+                if stats.cached_ask_latencies
+                else None
+            ),
+        },
+        "tokens": {
+            "embedding": embedding_tokens,
+            "chat_input": stats.chat_input_tokens,
+            "chat_output": stats.chat_output_tokens,
+        },
+        "estimated_cost_usd": round(cost, 6),
+    }
+
+
+def resolve_settings(chunk_chars: int | None, chunk_overlap: int | None) -> Settings:
+    """Settings from the environment, with the chunking flags applied on top."""
+    settings = Settings()
+    overrides = {}
+    if chunk_chars is not None:
+        overrides["chunk_target_chars"] = chunk_chars
+    if chunk_overlap is not None:
+        overrides["chunk_overlap_chars"] = chunk_overlap
+    return settings.model_copy(update=overrides) if overrides else settings
+
+
 async def run(
     k_values: list[int],
     warm_cache: bool,
     chunk_chars: int | None = None,
     chunk_overlap: int | None = None,
 ) -> dict:
-    settings = Settings()
-    if chunk_chars is not None:
-        settings = settings.model_copy(update={"chunk_target_chars": chunk_chars})
-    if chunk_overlap is not None:
-        settings = settings.model_copy(update={"chunk_overlap_chars": chunk_overlap})
+    """Run the whole evaluation and return the report."""
+    settings = resolve_settings(chunk_chars, chunk_overlap)
     store = build_store(settings)
     cache = build_cache(settings)
     provider = build_provider(settings)
-    await store.setup()
-    service = RagService(settings, store, cache, provider)
 
     documents = json.loads((FIXTURES / "documents.json").read_text(encoding="utf-8"))
     questions = json.loads((FIXTURES / "questions.json").read_text(encoding="utf-8"))
-    max_k = max(k_values)
 
     try:
-        ingest_started = time.perf_counter()
-        chunks = 0
-        embedding_tokens = 0
-        for document in documents:
-            result = await service.ingest(
-                source=document["source"],
-                text=document["text"],
-                title=document.get("title"),
-            )
-            chunks += result.chunks
-            embedding_tokens += result.embedding_tokens
-        ingest_ms = (time.perf_counter() - ingest_started) * 1000
-
-        hits = dict.fromkeys(k_values, 0)
-        first_rank_sum = 0.0
-        ranked = 0
-        search_latencies: list[float] = []
-        ask_latencies: list[float] = []
-        cached_ask_latencies: list[float] = []
-        chat_input_tokens = 0
-        chat_output_tokens = 0
-        question_tokens = 0
-        misses: list[str] = []
-
-        for item in questions:
-            started = time.perf_counter()
-            search = await service.search(item["question"], top_k=max_k)
-            search_latencies.append((time.perf_counter() - started) * 1000)
-
-            rank = None
-            for index, result in enumerate(search.results, start=1):
-                if result.source == item["source"] and item["snippet"] in result.content:
-                    rank = index
-                    break
-            if rank is None:
-                misses.append(item["question"])
-            else:
-                ranked += 1
-                first_rank_sum += 1.0 / rank
-                for k in k_values:
-                    if rank <= k:
-                        hits[k] += 1
-
-            started = time.perf_counter()
-            answer = await service.ask(item["question"], top_k=max_k)
-            ask_latencies.append((time.perf_counter() - started) * 1000)
-            question_tokens += answer.usage.embedding_tokens
-            chat_input_tokens += answer.usage.chat_input_tokens
-            chat_output_tokens += answer.usage.chat_output_tokens
-
-            if warm_cache:
-                started = time.perf_counter()
-                repeat = await service.ask(item["question"], top_k=max_k)
-                cached_ask_latencies.append((time.perf_counter() - started) * 1000)
-                if not repeat.cached:
-                    raise RuntimeError(f"expected a cache hit for {item['question']!r}")
-
-        total_embedding_tokens = embedding_tokens + question_tokens
-        cost = (
-            total_embedding_tokens * settings.embedding_price_per_mtok
-            + chat_input_tokens * settings.chat_input_price_per_mtok
-            + chat_output_tokens * settings.chat_output_price_per_mtok
-        ) / 1_000_000
-
-        return {
-            "config": {
-                "store": store.name,
-                "cache": cache.name,
-                "provider": provider.name,
-                "embedding_model": settings.embedding_model,
-                "chat_model": settings.chat_model,
-                "chunk_target_chars": settings.chunk_target_chars,
-                "chunk_overlap_chars": settings.chunk_overlap_chars,
-                "top_k": max_k,
-            },
-            "corpus": {
-                "documents": len(documents),
-                "chunks": chunks,
-                "questions": len(questions),
-                "ingest_ms": round(ingest_ms, 1),
-            },
-            "retrieval": {
-                "hit_rate": {str(k): round(hits[k] / len(questions), 4) for k in k_values},
-                "mrr": round(first_rank_sum / len(questions), 4),
-                "found": ranked,
-                "misses": misses,
-            },
-            "latency_ms": {
-                "search_p50": round(statistics.median(search_latencies), 2),
-                "search_p95": round(percentile(search_latencies, 0.95), 2),
-                "ask_p50": round(statistics.median(ask_latencies), 2),
-                "ask_p95": round(percentile(ask_latencies, 0.95), 2),
-                "ask_cached_p50": (
-                    round(statistics.median(cached_ask_latencies), 2)
-                    if cached_ask_latencies
-                    else None
-                ),
-            },
-            "tokens": {
-                "embedding": total_embedding_tokens,
-                "chat_input": chat_input_tokens,
-                "chat_output": chat_output_tokens,
-            },
-            "estimated_cost_usd": round(cost, 6),
-        }
+        await store.setup()
+        service = RagService(settings, store, cache, provider)
+        ingest = await ingest_corpus(service, documents)
+        stats = await measure_questions(service, questions, k_values, warm_cache)
+        return build_report(
+            settings,
+            {"store": store.name, "cache": cache.name, "provider": provider.name},
+            k_values,
+            len(documents),
+            len(questions),
+            ingest,
+            stats,
+        )
     finally:
         await store.aclose()
         await cache.aclose()
