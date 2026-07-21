@@ -130,15 +130,7 @@ class RagService:
 
         cached = await self.cache.get(key)
         if cached is not None:
-            payload = json.loads(cached)
-            return AskResponse(
-                question=question,
-                answer=payload["answer"],
-                citations=[Citation(**item) for item in payload["citations"]],
-                cached=True,
-                usage=Usage(**payload["usage"]),
-                took_ms=_elapsed_ms(started),
-            )
+            return _answer_from_cache(cached, question, started)
 
         vectors, embedding_tokens, _ = await self._embed_cached([question])
         hits = await self.store.search(vectors[0], k, document_ids)
@@ -252,3 +244,17 @@ def extract_citations(answer: str, hits: list[SearchHit]) -> list[Citation]:
 
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 3)
+
+
+def _answer_from_cache(cached: str, question: str, started: float) -> AskResponse:
+    """Rebuild a response from its cached JSON. took_ms is measured fresh, so it
+    reports this request's latency rather than the one that filled the cache."""
+    payload = json.loads(cached)
+    return AskResponse(
+        question=question,
+        answer=payload["answer"],
+        citations=[Citation(**item) for item in payload["citations"]],
+        cached=True,
+        usage=Usage(**payload["usage"]),
+        took_ms=_elapsed_ms(started),
+    )
