@@ -32,7 +32,9 @@ async def test_redis_roundtrip_and_ttl(cache: RedisCache):
     assert await cache.get(key) is None
     await cache.set(key, "value", 60)
     assert await cache.get(key) == "value"
-    ttl = await cache._client.ttl(key)
+    # Reaching past the interface on purpose: the TTL is what is under test and
+    # RedisCache exposes no public accessor for it.
+    ttl = await cache._client.ttl(key)  # pylint: disable=protected-access
     assert 0 < ttl <= 60
 
 

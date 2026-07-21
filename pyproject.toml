@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pylint>=3.3",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
@@ -34,6 +35,27 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+
+[tool.pylint.main]
+# Two reasons, both deliberate:
+#   - Docstrings are written where they explain something non-obvious. Requiring
+#     one on every method produces filler that restates the signature.
+#   - ruff owns import order here (the I rules). Letting pylint rule on it too
+#     means two tools disagreeing about the same file.
+#   - redefined-outer-name fires on every pytest fixture, because the test
+#     argument necessarily shares the fixture's name.
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "redefined-outer-name",
+    "wrong-import-order",
+    "wrong-import-position",
+    "ungrouped-imports",
+]
+
+[tool.pylint.format]
+max-line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

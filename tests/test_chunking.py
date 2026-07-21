@@ -5,6 +5,9 @@ from tests.conftest import FINTECH_FAQ
 
 
 def test_blank_input_produces_no_chunks():
+    # Compared against [] rather than checked for falsiness, so returning None
+    # instead of an empty list would fail this test.
+    # pylint: disable=use-implicit-booleaness-not-comparison
     assert chunk_text("   \n\n  ") == []
 
 
