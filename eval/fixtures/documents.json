@@ -1,0 +1,22 @@
+[
+  {
+    "source": "payments-faq.md",
+    "title": "Card payments FAQ",
+    "text": "Settlement of card payments happens on T plus two business days for domestic transactions. Cross border transactions settle on T plus five business days. Settlement runs once per banking day and skips weekends and public holidays in the acquiring country.\n\nChargebacks can be raised by the cardholder within 120 days of the transaction date. The merchant then has 20 days to respond with compelling evidence. A second presentment that misses the 20 day deadline is closed in favour of the cardholder.\n\nThe daily payout cutoff is 16:00 UTC. Payout batches created after the cutoff are queued and sent on the next banking day. A payout batch that fails validation is retried twice before it is parked for manual review.\n\nRefunds are processed against the original payment method. A refund cannot exceed the captured amount of the original payment. Partial refunds are allowed and each one creates its own ledger entry."
+  },
+  {
+    "source": "ledger-model.md",
+    "title": "Ledger data model",
+    "text": "Every ledger entry is immutable once written. A correction is posted as a reversing entry that references the original entry id. Nothing is ever updated in place, which is what makes the audit trail complete.\n\nThe ledger uses double entry bookkeeping. Each transaction writes at least two entries whose signed amounts sum to zero. A transaction that does not balance is rejected before it is committed.\n\nAmounts are stored as integer minor units together with an ISO 4217 currency code. Floating point is never used for money. A currency conversion writes four entries: two in the source currency and two in the target currency, plus the rate used.\n\nAccount balances are derived by summing entries, not stored on the account row. A materialised balance snapshot is written once per day so that historical queries do not have to scan the whole entry table."
+  },
+  {
+    "source": "kyc-policy.md",
+    "title": "KYC and onboarding policy",
+    "text": "A new merchant must complete identity verification before the first payout is released. Payments can be accepted during review, but the funds are held. Verification requires a government issued identity document and proof of the registered business address.\n\nUltimate beneficial owners holding 25 percent or more of the company must be identified individually. Each owner is screened against sanctions lists and politically exposed person lists. A positive screening hit sends the application to manual review.\n\nOngoing monitoring re-screens every merchant weekly. A merchant whose risk score crosses the review threshold is flagged and their payouts are paused until an analyst clears the flag.\n\nRecords collected during onboarding are retained for five years after the business relationship ends, which is what the anti money laundering rules require."
+  },
+  {
+    "source": "api-limits.md",
+    "title": "API rate limits and idempotency",
+    "text": "The public API allows 100 requests per second per API key by default. Bursts up to 200 requests per second are absorbed by a token bucket. Exceeding the limit returns HTTP 429 with a Retry-After header in seconds.\n\nEvery write endpoint accepts an Idempotency-Key header. A repeated request with the same idempotency key returns the stored response of the first request instead of creating a second resource. Idempotency keys are retained for 24 hours.\n\nWebhooks are delivered at least once. A webhook that does not receive a 2xx response is retried with exponential backoff for up to 72 hours. Consumers must deduplicate on the event id because a duplicate delivery is possible.\n\nAll timestamps in the API are RFC 3339 in UTC. Pagination is cursor based and a cursor stays valid for one hour."
+  }
+]

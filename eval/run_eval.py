@@ -1,0 +1,258 @@
+"""Retrieval and cost evaluation.
+
+Ingests the fixture documents, runs every fixture question through search and
+ask, and reports:
+
+* hit rate at k: the share of questions where a chunk containing the expected
+  snippet, from the expected source, appears in the top k results.
+* p50 and p95 latency for the search and ask calls, measured in this process.
+* token counts and an estimated cost from the per million token prices in the
+  settings.
+
+Defaults are the memory store, the memory cache and the fake provider, so it
+runs offline. Point STORE_BACKEND, CACHE_BACKEND and PROVIDER at the real
+backends to evaluate the real thing.
+
+Usage:
+    python -m eval.run_eval
+    python -m eval.run_eval --k 1 3 5 --json eval/out/report.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import statistics
+import time
+from pathlib import Path
+
+from app.cache import build_cache
+from app.config import Settings
+from app.providers import build_provider
+from app.service import RagService
+from app.store import build_store
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    """Nearest rank percentile. Returns 0.0 for an empty sample."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = max(1, min(len(ordered), round(fraction * len(ordered) + 0.5)))
+    return ordered[rank - 1]
+
+
+async def run(
+    k_values: list[int],
+    warm_cache: bool,
+    chunk_chars: int | None = None,
+    chunk_overlap: int | None = None,
+) -> dict:
+    settings = Settings()
+    if chunk_chars is not None:
+        settings = settings.model_copy(update={"chunk_target_chars": chunk_chars})
+    if chunk_overlap is not None:
+        settings = settings.model_copy(update={"chunk_overlap_chars": chunk_overlap})
+    store = build_store(settings)
+    cache = build_cache(settings)
+    provider = build_provider(settings)
+    await store.setup()
+    service = RagService(settings, store, cache, provider)
+
+    documents = json.loads((FIXTURES / "documents.json").read_text(encoding="utf-8"))
+    questions = json.loads((FIXTURES / "questions.json").read_text(encoding="utf-8"))
+    max_k = max(k_values)
+
+    try:
+        ingest_started = time.perf_counter()
+        chunks = 0
+        embedding_tokens = 0
+        for document in documents:
+            result = await service.ingest(
+                source=document["source"],
+                text=document["text"],
+                title=document.get("title"),
+            )
+            chunks += result.chunks
+            embedding_tokens += result.embedding_tokens
+        ingest_ms = (time.perf_counter() - ingest_started) * 1000
+
+        hits = dict.fromkeys(k_values, 0)
+        first_rank_sum = 0.0
+        ranked = 0
+        search_latencies: list[float] = []
+        ask_latencies: list[float] = []
+        cached_ask_latencies: list[float] = []
+        chat_input_tokens = 0
+        chat_output_tokens = 0
+        question_tokens = 0
+        misses: list[str] = []
+
+        for item in questions:
+            started = time.perf_counter()
+            search = await service.search(item["question"], top_k=max_k)
+            search_latencies.append((time.perf_counter() - started) * 1000)
+
+            rank = None
+            for index, result in enumerate(search.results, start=1):
+                if result.source == item["source"] and item["snippet"] in result.content:
+                    rank = index
+                    break
+            if rank is None:
+                misses.append(item["question"])
+            else:
+                ranked += 1
+                first_rank_sum += 1.0 / rank
+                for k in k_values:
+                    if rank <= k:
+                        hits[k] += 1
+
+            started = time.perf_counter()
+            answer = await service.ask(item["question"], top_k=max_k)
+            ask_latencies.append((time.perf_counter() - started) * 1000)
+            question_tokens += answer.usage.embedding_tokens
+            chat_input_tokens += answer.usage.chat_input_tokens
+            chat_output_tokens += answer.usage.chat_output_tokens
+
+            if warm_cache:
+                started = time.perf_counter()
+                repeat = await service.ask(item["question"], top_k=max_k)
+                cached_ask_latencies.append((time.perf_counter() - started) * 1000)
+                if not repeat.cached:
+                    raise RuntimeError(f"expected a cache hit for {item['question']!r}")
+
+        total_embedding_tokens = embedding_tokens + question_tokens
+        cost = (
+            total_embedding_tokens * settings.embedding_price_per_mtok
+            + chat_input_tokens * settings.chat_input_price_per_mtok
+            + chat_output_tokens * settings.chat_output_price_per_mtok
+        ) / 1_000_000
+
+        return {
+            "config": {
+                "store": store.name,
+                "cache": cache.name,
+                "provider": provider.name,
+                "embedding_model": settings.embedding_model,
+                "chat_model": settings.chat_model,
+                "chunk_target_chars": settings.chunk_target_chars,
+                "chunk_overlap_chars": settings.chunk_overlap_chars,
+                "top_k": max_k,
+            },
+            "corpus": {
+                "documents": len(documents),
+                "chunks": chunks,
+                "questions": len(questions),
+                "ingest_ms": round(ingest_ms, 1),
+            },
+            "retrieval": {
+                "hit_rate": {str(k): round(hits[k] / len(questions), 4) for k in k_values},
+                "mrr": round(first_rank_sum / len(questions), 4),
+                "found": ranked,
+                "misses": misses,
+            },
+            "latency_ms": {
+                "search_p50": round(statistics.median(search_latencies), 2),
+                "search_p95": round(percentile(search_latencies, 0.95), 2),
+                "ask_p50": round(statistics.median(ask_latencies), 2),
+                "ask_p95": round(percentile(ask_latencies, 0.95), 2),
+                "ask_cached_p50": (
+                    round(statistics.median(cached_ask_latencies), 2)
+                    if cached_ask_latencies
+                    else None
+                ),
+            },
+            "tokens": {
+                "embedding": total_embedding_tokens,
+                "chat_input": chat_input_tokens,
+                "chat_output": chat_output_tokens,
+            },
+            "estimated_cost_usd": round(cost, 6),
+        }
+    finally:
+        await store.aclose()
+        await cache.aclose()
+        await provider.aclose()
+
+
+def format_report(report: dict) -> str:
+    config = report["config"]
+    corpus = report["corpus"]
+    latency = report["latency_ms"]
+    tokens = report["tokens"]
+    lines = [
+        "pgvector-rag eval",
+        "=================",
+        f"store={config['store']} cache={config['cache']} provider={config['provider']}",
+        f"chunking={config['chunk_target_chars']}/{config['chunk_overlap_chars']} chars, "
+        f"top_k={config['top_k']}",
+        f"corpus: {corpus['documents']} documents, {corpus['chunks']} chunks, "
+        f"{corpus['questions']} questions (ingest {corpus['ingest_ms']} ms)",
+        "",
+        "retrieval",
+        "---------",
+    ]
+    for k, rate in report["retrieval"]["hit_rate"].items():
+        lines.append(f"  hit rate @{k:<3} {rate:.2%}")
+    lines.append(f"  MRR         {report['retrieval']['mrr']:.4f}")
+    for miss in report["retrieval"]["misses"]:
+        lines.append(f"  miss: {miss}")
+    lines += [
+        "",
+        "latency (ms, in process, excludes HTTP)",
+        "---------------------------------------",
+        f"  search  p50 {latency['search_p50']:>8.2f}   p95 {latency['search_p95']:>8.2f}",
+        f"  ask     p50 {latency['ask_p50']:>8.2f}   p95 {latency['ask_p95']:>8.2f}",
+    ]
+    if latency["ask_cached_p50"] is not None:
+        lines.append(f"  ask (cached) p50 {latency['ask_cached_p50']:>8.2f}")
+    lines += [
+        "",
+        "tokens and cost",
+        "---------------",
+        f"  embedding tokens   {tokens['embedding']:>8}",
+        f"  chat input tokens  {tokens['chat_input']:>8}",
+        f"  chat output tokens {tokens['chat_output']:>8}",
+        f"  estimated cost     ${report['estimated_cost_usd']:.6f}",
+        "  token counts from the fake provider are a 4 chars per token estimate",
+    ]
+    return "\n".join(lines)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate retrieval quality, latency and cost.")
+    parser.add_argument("--k", type=int, nargs="+", default=[1, 3, 5], help="k values to report")
+    parser.add_argument(
+        "--no-warm-cache",
+        action="store_true",
+        help="skip the repeated question that measures cached answer latency",
+    )
+    parser.add_argument("--json", type=Path, default=None, help="also write the report as JSON")
+    parser.add_argument(
+        "--chunk-chars", type=int, default=None, help="override CHUNK_TARGET_CHARS for this run"
+    )
+    parser.add_argument(
+        "--chunk-overlap", type=int, default=None, help="override CHUNK_OVERLAP_CHARS for this run"
+    )
+    args = parser.parse_args()
+
+    report = asyncio.run(
+        run(
+            sorted(set(args.k)),
+            warm_cache=not args.no_warm_cache,
+            chunk_chars=args.chunk_chars,
+            chunk_overlap=args.chunk_overlap,
+        )
+    )
+    print(format_report(report))
+    if args.json:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"\nwrote {args.json}")
+
+
+if __name__ == "__main__":
+    main()

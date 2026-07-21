@@ -1,0 +1,77 @@
+[
+  {
+    "question": "How many business days does domestic card settlement take?",
+    "source": "payments-faq.md",
+    "snippet": "T plus two business days for domestic"
+  },
+  {
+    "question": "Within how many days can a cardholder raise chargebacks?",
+    "source": "payments-faq.md",
+    "snippet": "within 120 days of the transaction date"
+  },
+  {
+    "question": "What is the daily payout cutoff time?",
+    "source": "payments-faq.md",
+    "snippet": "daily payout cutoff is 16:00 UTC"
+  },
+  {
+    "question": "Can a refund exceed the captured amount of the original payment?",
+    "source": "payments-faq.md",
+    "snippet": "refund cannot exceed the captured amount"
+  },
+  {
+    "question": "How is a correction posted to an immutable ledger entry?",
+    "source": "ledger-model.md",
+    "snippet": "reversing entry that references the original entry id"
+  },
+  {
+    "question": "What happens to a transaction that does not balance?",
+    "source": "ledger-model.md",
+    "snippet": "does not balance is rejected"
+  },
+  {
+    "question": "How are money amounts and currency stored in the ledger?",
+    "source": "ledger-model.md",
+    "snippet": "integer minor units together with an ISO 4217 currency code"
+  },
+  {
+    "question": "Are account balances stored on the account row?",
+    "source": "ledger-model.md",
+    "snippet": "derived by summing entries, not stored on the account row"
+  },
+  {
+    "question": "Which beneficial owners must be identified during onboarding?",
+    "source": "kyc-policy.md",
+    "snippet": "holding 25 percent or more"
+  },
+  {
+    "question": "How long are onboarding records retained after the relationship ends?",
+    "source": "kyc-policy.md",
+    "snippet": "retained for five years"
+  },
+  {
+    "question": "How often is ongoing monitoring re-screening done for merchants?",
+    "source": "kyc-policy.md",
+    "snippet": "re-screens every merchant weekly"
+  },
+  {
+    "question": "What is the default requests per second rate limit per API key?",
+    "source": "api-limits.md",
+    "snippet": "100 requests per second per API key"
+  },
+  {
+    "question": "What does a repeated request with the same idempotency key return?",
+    "source": "api-limits.md",
+    "snippet": "returns the stored response of the first request"
+  },
+  {
+    "question": "For how long is a failing webhook retried with exponential backoff?",
+    "source": "api-limits.md",
+    "snippet": "exponential backoff for up to 72 hours"
+  },
+  {
+    "question": "How long does a pagination cursor stay valid?",
+    "source": "api-limits.md",
+    "snippet": "cursor stays valid for one hour"
+  }
+]
