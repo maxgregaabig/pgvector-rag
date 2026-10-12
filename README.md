@@ -1,6 +1,5 @@
 # pgvector-rag
 
-[![CI](https://github.com/H4mid2019/pgvector-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/H4mid2019/pgvector-rag/actions/workflows/ci.yml)
 
 A retrieval augmented generation API. It ingests documents, chunks and embeds
 them, stores the vectors in PostgreSQL with pgvector, and answers questions
